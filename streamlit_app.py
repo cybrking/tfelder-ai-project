@@ -66,18 +66,27 @@ def create_rules_dataframe(sg_config):
     inbound_rules = sg_config.get("IpPermissions", [])
     outbound_rules = sg_config.get("IpPermissionsEgress", [])
     
+    def format_port_range(from_port, to_port):
+        if from_port == to_port:
+            return str(from_port)
+        elif from_port == -1 and to_port == -1:
+            return "All"
+        else:
+            return f"{from_port}-{to_port}"
+
     def create_rule_entries(rules, direction):
         entries = []
         for rule in rules:
             protocol = rule.get("IpProtocol", "All")
             from_port = rule.get("FromPort", "Any")
             to_port = rule.get("ToPort", "Any")
+            port_range = format_port_range(from_port, to_port)
             for ip_range in rule.get("IpRanges", []):
                 cidr = ip_range.get("CidrIp", "Any")
                 entries.append({
                     "Direction": direction,
                     "Protocol": protocol,
-                    "Port Range": f"{from_port}-{to_port}",
+                    "Port Range": port_range,
                     "Source/Destination": cidr
                 })
         return entries
@@ -90,11 +99,18 @@ def main():
 
     st.title("🛡️ AWS Security Group Analyzer")
 
-    uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
-    
-    if uploaded_file is not None:
-        try:
+    # Add radio button for input method selection
+    input_method = st.radio("Choose input method:", ("Upload JSON file", "Paste JSON text"))
+
+    if input_method == "Upload JSON file":
+        uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
+        if uploaded_file is not None:
             file_contents = uploaded_file.getvalue().decode("utf-8")
+    else:
+        file_contents = st.text_area("Paste your security group configuration JSON here:", height=300)
+
+    if file_contents:
+        try:
             sg_configs = parse_security_groups(file_contents)
             
             if sg_configs:
@@ -102,37 +118,19 @@ def main():
                     st.markdown(f"## Security Group: {sg_config.get('GroupName', 'Unnamed')}")
                     
                     # Create and display the rules table
-                    def create_rules_dataframe(sg_config):
-                        inbound_rules = sg_config.get("IpPermissions", [])
-                        outbound_rules = sg_config.get("IpPermissionsEgress", [])
-                        
-                        def format_port_range(from_port, to_port):
-                            if from_port == to_port:
-                                return str(from_port)
-                            elif from_port == -1 and to_port == -1:
-                                return "All"
-                            else:
-                                return f"{from_port}-{to_port}"
-
-                        def create_rule_entries(rules, direction):
-                            entries = []
-                            for rule in rules:
-                                protocol = rule.get("IpProtocol", "All")
-                                from_port = rule.get("FromPort", "Any")
-                                to_port = rule.get("ToPort", "Any")
-                                port_range = format_port_range(from_port, to_port)
-                                for ip_range in rule.get("IpRanges", []):
-                                    cidr = ip_range.get("CidrIp", "Any")
-                                    entries.append({
-                                        "Direction": direction,
-                                        "Protocol": protocol,
-                                        "Port Range": port_range,
-                                        "Source/Destination": cidr
-                                    })
-                            return entries
-                        
-                        all_entries = create_rule_entries(inbound_rules, "Inbound") + create_rule_entries(outbound_rules, "Outbound")
-                        return pd.DataFrame(all_entries)
+                    st.markdown("### Security Group Rules")
+                    rules_df = create_rules_dataframe(sg_config)
+                    st.dataframe(
+                        rules_df,
+                        column_config={
+                            "Direction": st.column_config.TextColumn("Direction", width="medium"),
+                            "Protocol": st.column_config.TextColumn("Protocol", width="medium"),
+                            "Port Range": st.column_config.TextColumn("Port Range", width="medium"),
+                            "Source/Destination": st.column_config.TextColumn("Source/Destination", width="large")
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
                     # Analysis Results
                     st.markdown("### 🔍 Analysis Results")
@@ -155,7 +153,7 @@ def main():
                     st.markdown("---")
 
         except Exception as e:
-            st.error(f"An error occurred while processing the file: {str(e)}")
+            st.error(f"An error occurred while processing the input: {str(e)}")
 
     st.sidebar.title("About")
     st.sidebar.info(
