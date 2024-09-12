@@ -99,17 +99,10 @@ def main():
 
     st.title("🛡️ AWS Security Group Analyzer")
 
-    # Add radio button for input method selection
-    input_method = st.radio("Choose input method:", ("Upload JSON file", "Paste JSON text"))
-
-    if input_method == "Upload JSON file":
-        uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
-        if uploaded_file is not None:
-            file_contents = uploaded_file.getvalue().decode("utf-8")
-    else:
-        file_contents = st.text_area("Paste your security group configuration JSON here:", height=300)
-
-    if file_contents:
+    uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
+    
+    if uploaded_file is not None:
+        file_contents = uploaded_file.getvalue().decode("utf-8")
         try:
             sg_configs = parse_security_groups(file_contents)
             
@@ -153,7 +146,7 @@ def main():
                     st.markdown("---")
 
         except Exception as e:
-            st.error(f"An error occurred while processing the input: {str(e)}")
+            st.error(f"An error occurred while processing the file: {str(e)}")
 
     st.sidebar.title("About")
     st.sidebar.info(
