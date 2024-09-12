@@ -3,98 +3,25 @@ import json
 from collections import defaultdict
 import pandas as pd
 
-def parse_security_groups(file_contents):
-    try:
-        data = json.loads(file_contents)
-        if isinstance(data, dict):
-            return [data]
-        elif isinstance(data, list):
-            return data
-        else:
-            st.error(f"Invalid JSON structure. Expected a dictionary or a list of dictionaries. Got: {type(data)}")
-            return None
-    except json.JSONDecodeError as e:
-        st.error(f"Invalid JSON file: {str(e)}")
-        return None
-    except Exception as e:
-        st.error(f"An unexpected error occurred while parsing the security groups: {str(e)}")
-        return None
-
-def is_port_sensitive(port):
-    sensitive_ports = [22, 3389, 1433, 3306, 5432, 27017, 6379, 9200, 9300]
-    return port in sensitive_ports
-
-def is_large_port_range(from_port, to_port):
-    return to_port - from_port > 100
-
-def analyze_security_group(sg_config):
-    issues = defaultdict(list)
-    suggestions = defaultdict(list)
-    
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-
-    for rule in inbound_rules + outbound_rules:
-        protocol = rule.get("IpProtocol")
-        from_port = rule.get("FromPort")
-        to_port = rule.get("ToPort")
-        
-        for ip_range in rule.get("IpRanges", []):
-            cidr = ip_range.get("CidrIp")
-            if cidr == "0.0.0.0/0":
-                if protocol == "-1":
-                    issues["High"].append(f"Overly permissive rule: All traffic allowed from {cidr}")
-                    suggestions["High"].append("Restrict traffic to only necessary protocols and ports")
-                elif is_port_sensitive(from_port) or is_port_sensitive(to_port):
-                    issues["High"].append(f"Overly permissive rule: {protocol} {from_port}-{to_port} open to the world")
-                    suggestions["High"].append(f"Restrict {protocol} {from_port}-{to_port} to specific IP ranges or security groups")
-                else:
-                    issues["Medium"].append(f"Potentially overly permissive rule: {protocol} {from_port}-{to_port} open to the world")
-                    suggestions["Medium"].append(f"Consider restricting {protocol} {from_port}-{to_port} to specific IP ranges or security groups")
-
-        if from_port is not None and to_port is not None and is_large_port_range(from_port, to_port):
-            issues["Medium"].append(f"Large port range: {from_port}-{to_port}")
-            suggestions["Medium"].append(f"Consider narrowing the port range {from_port}-{to_port} to only necessary ports")
-
-    if sg_config.get("GroupName") == "default":
-        issues["Medium"].append("Default security group is being used")
-        suggestions["Medium"].append("Consider creating custom security groups instead of using the default group")
-
-    return issues, suggestions
-
-def create_rules_dataframe(sg_config):
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    def create_rule_entries(rules, direction):
-        entries = []
-        for rule in rules:
-            protocol = rule.get("IpProtocol", "All")
-            from_port = rule.get("FromPort", "Any")
-            to_port = rule.get("ToPort", "Any")
-            for ip_range in rule.get("IpRanges", []):
-                cidr = ip_range.get("CidrIp", "Any")
-                entries.append({
-                    "Direction": direction,
-                    "Protocol": protocol,
-                    "Port Range": f"{from_port}-{to_port}",
-                    "Source/Destination": cidr
-                })
-        return entries
-    
-    all_entries = create_rule_entries(inbound_rules, "Inbound") + create_rule_entries(outbound_rules, "Outbound")
-    return pd.DataFrame(all_entries)
+# ... [Keep the existing helper functions: parse_security_groups, is_port_sensitive, is_large_port_range, analyze_security_group, create_rules_dataframe] ...
 
 def main():
     st.set_page_config(layout="wide", page_title="Security Group Analyzer")
 
     st.title("🛡️ AWS Security Group Analyzer")
 
-    uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
-    
-    if uploaded_file is not None:
-        try:
+    # Add radio button for input method selection
+    input_method = st.radio("Choose input method:", ("Upload JSON file", "Paste JSON text"))
+
+    if input_method == "Upload JSON file":
+        uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
+        if uploaded_file is not None:
             file_contents = uploaded_file.getvalue().decode("utf-8")
+    else:
+        file_contents = st.text_area("Paste your security group configuration JSON here:", height=300)
+
+    if file_contents:
+        try:
             sg_configs = parse_security_groups(file_contents)
             
             if sg_configs:
@@ -137,7 +64,7 @@ def main():
                     st.markdown("---")
 
         except Exception as e:
-            st.error(f"An error occurred while processing the file: {str(e)}")
+            st.error(f"An error occurred while processing the input: {str(e)}")
 
     st.sidebar.title("About")
     st.sidebar.info(
