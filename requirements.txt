@@ -2,5 +2,5 @@ streamlit==1.27.2
 pandas==2.1.1
 plotly==5.17.0
 networkx==3.1
-st-aggrid==0.3.4
+aggrid==0.3.4
 altair==5.0.1
