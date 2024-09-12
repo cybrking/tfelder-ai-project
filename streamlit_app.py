@@ -340,4 +340,4 @@ def main():
             # Comparison (if multiple security groups)
             if len(sg_configs) > 1:
                 st.subheader("Security Group Comparison")
-                sg1 = st.selectbox("Select first security group", range(len(sg_configs)), format_func=lambda i: sg_configs[i].get('GroupName
+                sg1 = st.selectbox("Select first security group", range(len(sg_configs)), format_func=lambda i: sg_configs[i].get('GroupName))
