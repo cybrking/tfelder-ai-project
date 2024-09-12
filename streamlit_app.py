@@ -8,9 +8,26 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import networkx as nx
 
-# ... [previous functions remain unchanged] ...
+def parse_security_groups(file_contents):
+    try:
+        data = json.loads(file_contents)
+        if isinstance(data, dict):
+            # Single security group
+            return [data]
+        elif isinstance(data, list):
+            # Multiple security groups
+            return data
+        else:
+            st.error(f"Invalid JSON structure. Expected a dictionary or a list of dictionaries. Got: {type(data)}")
+            return None
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid JSON file: {str(e)}")
+        return None
+    except Exception as e:
+        st.error(f"An unexpected error occurred while parsing the security groups: {str(e)}")
+        return None
 
-# Add the create_network_diagram function here
+# ... [All other functions remain the same as in the previous version] ...
 
 def main():
     st.set_page_config(layout="wide")
@@ -20,9 +37,21 @@ def main():
     
     if uploaded_file is not None:
         file_contents = uploaded_file.getvalue().decode("utf-8")
-        sg_configs = parse_security_groups(file_contents)
+        
+        # Debug information
+        st.subheader("Debug Information")
+        st.text("File contents:")
+        st.code(file_contents)
 
-        if sg_configs:
+        try:
+            sg_configs = parse_security_groups(file_contents)
+            
+            if sg_configs is None:
+                st.error("Failed to parse security groups. Please check the file format and try again.")
+                return
+
+            st.success(f"Successfully parsed {len(sg_configs)} security group(s)")
+
             all_issues = []
             all_suggestions = []
             
@@ -66,7 +95,35 @@ def main():
                 rules_fig = visualize_security_group(sg_config)
                 st.plotly_chart(rules_fig, use_container_width=True)
 
-            # ... [rest of the main function remains unchanged] ...
+            # Comparison (if multiple security groups)
+            if len(sg_configs) > 1:
+                st.subheader("Security Group Comparison")
+                sg1 = st.selectbox("Select first security group", range(len(sg_configs)), format_func=lambda i: sg_configs[i].get('GroupName', f'Security Group {i+1}'))
+                sg2 = st.selectbox("Select second security group", range(len(sg_configs)), format_func=lambda i: sg_configs[i].get('GroupName', f'Security Group {i+1}'))
+                if st.button("Compare"):
+                    differences = compare_security_groups(sg_configs[sg1], sg_configs[sg2])
+                    if differences:
+                        for diff in differences:
+                            st.write(diff)
+                    else:
+                        st.write("No differences found.")
+
+            # Export
+            st.subheader("Export Report")
+            export_format = st.radio("Select export format:", ("TXT", "PDF"))
+            if st.button("Generate Report"):
+                if export_format == "TXT":
+                    report = export_report(sg_configs, all_issues, all_suggestions, format='txt')
+                    b64 = base64.b64encode(report.encode()).decode()
+                    href = f'<a href="data:file/txt;base64,{b64}" download="security_group_analysis_report.txt">Download TXT Report</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+                else:
+                    pdf_buffer = export_report(sg_configs, all_issues, all_suggestions, format='pdf')
+                    b64 = base64.b64encode(pdf_buffer.getvalue()).decode()
+                    href = f'<a href="data:application/pdf;base64,{b64}" download="security_group_analysis_report.pdf">Download PDF Report</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"An unexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()
