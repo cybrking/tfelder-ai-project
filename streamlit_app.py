@@ -69,7 +69,12 @@ def analyze_security_group(sg_config):
     # Check for rule duplication
     rule_set = set()
     for rule in inbound_rules + outbound_rules:
-        rule_tuple = (rule.get("IpProtocol"), rule.get("FromPort"), rule.get("ToPort"), tuple(sorted(rule.get("IpRanges", []))))
+        rule_tuple = (
+            rule.get("IpProtocol"),
+            rule.get("FromPort"),
+            rule.get("ToPort"),
+            frozenset((ip_range.get("CidrIp") for ip_range in rule.get("IpRanges", [])))
+        )
         if rule_tuple in rule_set:
             issues["Low"].append(f"Duplicate rule: {rule}")
             suggestions["Low"].append("Remove duplicate rule to simplify security group configuration")
@@ -108,31 +113,40 @@ def main():
     uploaded_file = st.file_uploader("Choose a security group configuration file", type=["json"])
     
     if uploaded_file is not None:
-        file_contents = uploaded_file.getvalue().decode("utf-8")
-        
-        st.subheader("File Contents")
-        st.code(file_contents)
+        try:
+            file_contents = uploaded_file.getvalue().decode("utf-8")
+            
+            st.subheader("File Contents")
+            st.code(file_contents)
 
-        sg_configs = parse_security_groups(file_contents)
-        
-        if sg_configs:
-            for i, sg_config in enumerate(sg_configs):
-                st.subheader(f"Security Group {i+1}: {sg_config.get('GroupName', 'Unnamed')}")
-                
-                issues, suggestions = analyze_security_group(sg_config)
-                
-                st.subheader("Analysis Results")
-                for severity in ["High", "Medium", "Low"]:
-                    if issues.get(severity):
-                        st.write(f"{severity} Severity Issues:")
-                        for issue, suggestion in zip(issues[severity], suggestions[severity]):
-                            st.warning(issue)
-                            st.info(f"Suggestion: {suggestion}")
-                        st.write("---")
+            sg_configs = parse_security_groups(file_contents)
+            
+            if sg_configs:
+                for i, sg_config in enumerate(sg_configs):
+                    st.subheader(f"Security Group {i+1}: {sg_config.get('GroupName', 'Unnamed')}")
+                    
+                    try:
+                        issues, suggestions = analyze_security_group(sg_config)
+                        
+                        st.subheader("Analysis Results")
+                        for severity in ["High", "Medium", "Low"]:
+                            if issues.get(severity):
+                                st.write(f"{severity} Severity Issues:")
+                                for issue, suggestion in zip(issues[severity], suggestions[severity]):
+                                    st.warning(issue)
+                                    st.info(f"Suggestion: {suggestion}")
+                                st.write("---")
 
-                st.subheader("Security Group Rules Visualization")
-                fig = visualize_security_group(sg_config)
-                st.plotly_chart(fig, use_container_width=True)
+                        if not any(issues.values()):
+                            st.success("No issues found in this security group.")
+
+                        st.subheader("Security Group Rules Visualization")
+                        fig = visualize_security_group(sg_config)
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"An error occurred while analyzing security group {i+1}: {str(e)}")
+        except Exception as e:
+            st.error(f"An error occurred while processing the file: {str(e)}")
 
     st.sidebar.title("About")
     st.sidebar.info(
