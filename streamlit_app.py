@@ -4,114 +4,142 @@ from collections import defaultdict
 import plotly.graph_objects as go
 import networkx as nx
 import pandas as pd
-import plotly.express as px
-from streamlit_agGrid import AgGrid
-from streamlit_agGrid import GridOptionsBuilder
-import altair as alt
 
-# ... [Keep existing helper functions: parse_security_groups, is_port_sensitive, is_large_port_range, analyze_security_group] ...
+def parse_security_groups(file_contents):
+    try:
+        data = json.loads(file_contents)
+        if isinstance(data, dict):
+            return [data]
+        elif isinstance(data, list):
+            return data
+        else:
+            st.error(f"Invalid JSON structure. Expected a dictionary or a list of dictionaries. Got: {type(data)}")
+            return None
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid JSON file: {str(e)}")
+        return None
+    except Exception as e:
+        st.error(f"An unexpected error occurred while parsing the security groups: {str(e)}")
+        return None
 
-def create_enhanced_dataframe(sg_config):
+def is_port_sensitive(port):
+    sensitive_ports = [22, 3389, 1433, 3306, 5432, 27017, 6379, 9200, 9300]
+    return port in sensitive_ports
+
+def is_large_port_range(from_port, to_port):
+    return to_port - from_port > 100
+
+def analyze_security_group(sg_config):
+    issues = defaultdict(list)
+    suggestions = defaultdict(list)
+    
     inbound_rules = sg_config.get("IpPermissions", [])
     outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    def create_rule_df(rules, direction):
-        data = []
-        for rule in rules:
-            protocol = rule.get("IpProtocol", "All")
-            from_port = rule.get("FromPort", "Any")
-            to_port = rule.get("ToPort", "Any")
-            for ip_range in rule.get("IpRanges", []):
-                cidr = ip_range.get("CidrIp", "Unknown")
-                data.append({
-                    "Direction": direction,
-                    "Protocol": protocol,
-                    "Port Range": f"{from_port}-{to_port}",
-                    "CIDR": cidr
-                })
-        return pd.DataFrame(data)
-    
-    inbound_df = create_rule_df(inbound_rules, "Inbound")
-    outbound_df = create_rule_df(outbound_rules, "Outbound")
-    
-    return pd.concat([inbound_df, outbound_df], ignore_index=True)
 
-def visualize_rules_streamlit(df):
-    st.dataframe(df.style.applymap(lambda x: 'background-color: #ffcccb' if x == '0.0.0.0/0' else ''))
+    # Check for overly permissive rules
+    for rule in inbound_rules + outbound_rules:
+        protocol = rule.get("IpProtocol")
+        from_port = rule.get("FromPort")
+        to_port = rule.get("ToPort")
+        
+        for ip_range in rule.get("IpRanges", []):
+            cidr = ip_range.get("CidrIp")
+            if cidr == "0.0.0.0/0":
+                if protocol == "-1":
+                    issues["High"].append(f"Overly permissive rule: All traffic allowed from {cidr}")
+                    suggestions["High"].append("Restrict traffic to only necessary protocols and ports")
+                elif is_port_sensitive(from_port) or is_port_sensitive(to_port):
+                    issues["High"].append(f"Overly permissive rule: {protocol} {from_port}-{to_port} open to the world")
+                    suggestions["High"].append(f"Restrict {protocol} {from_port}-{to_port} to specific IP ranges or security groups")
+                else:
+                    issues["Medium"].append(f"Potentially overly permissive rule: {protocol} {from_port}-{to_port} open to the world")
+                    suggestions["Medium"].append(f"Consider restricting {protocol} {from_port}-{to_port} to specific IP ranges or security groups")
 
-def visualize_rules_aggrid(df):
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_pagination()
-    gb.configure_side_bar()
-    gb.configure_default_column(groupable=True, value=True, enableRowGroup=True, aggFunc="sum", editable=True)
-    gridOptions = gb.build()
-    AgGrid(df, gridOptions=gridOptions, enable_enterprise_modules=True)
+    # Check for large port ranges
+    for rule in inbound_rules + outbound_rules:
+        from_port = rule.get("FromPort")
+        to_port = rule.get("ToPort")
+        if from_port is not None and to_port is not None and is_large_port_range(from_port, to_port):
+            issues["Medium"].append(f"Large port range: {from_port}-{to_port}")
+            suggestions["Medium"].append(f"Consider narrowing the port range {from_port}-{to_port} to only necessary ports")
 
-def visualize_rules_custom_html(df):
-    html = """
-    <style>
-    .rules-table {
-        border-collapse: collapse;
-        width: 100%;
-        font-family: Arial, sans-serif;
-    }
-    .rules-table th, .rules-table td {
-        border: 1px solid #ddd;
-        padding: 8px;
-        text-align: left;
-    }
-    .rules-table tr:nth-child(even) {background-color: #f2f2f2;}
-    .rules-table th {
-        padding-top: 12px;
-        padding-bottom: 12px;
-        background-color: #4CAF50;
-        color: white;
-    }
-    .inbound {color: #1e90ff;}
-    .outbound {color: #32cd32;}
-    .all-traffic {background-color: #ffcccb;}
-    </style>
-    <table class="rules-table">
-        <tr>
-            <th>Direction</th>
-            <th>Protocol</th>
-            <th>Port Range</th>
-            <th>CIDR</th>
-        </tr>
-    """
-    for _, row in df.iterrows():
-        direction_class = "inbound" if row['Direction'] == "Inbound" else "outbound"
-        cidr_class = "all-traffic" if row['CIDR'] == "0.0.0.0/0" else ""
-        html += f"""
-        <tr>
-            <td class="{direction_class}">{row['Direction']}</td>
-            <td>{row['Protocol']}</td>
-            <td>{row['Port Range']}</td>
-            <td class="{cidr_class}">{row['CIDR']}</td>
-        </tr>
-        """
-    html += "</table>"
-    st.markdown(html, unsafe_allow_html=True)
+    # Check for rule duplication
+    rule_set = set()
+    for rule in inbound_rules + outbound_rules:
+        rule_tuple = (
+            rule.get("IpProtocol"),
+            rule.get("FromPort"),
+            rule.get("ToPort"),
+            frozenset((ip_range.get("CidrIp") for ip_range in rule.get("IpRanges", [])))
+        )
+        if rule_tuple in rule_set:
+            issues["Low"].append(f"Duplicate rule: {rule}")
+            suggestions["Low"].append("Remove duplicate rule to simplify security group configuration")
+        else:
+            rule_set.add(rule_tuple)
 
-def create_hierarchical_layout(sg_config):
+    # Check if it's the default security group
+    if sg_config.get("GroupName") == "default":
+        issues["Medium"].append("Default security group is being used")
+        suggestions["Medium"].append("Consider creating custom security groups instead of using the default group")
+
+    return issues, suggestions
+
+def visualize_security_group(sg_config):
+    def create_rule_text(rule):
+        protocol = rule.get("IpProtocol")
+        from_port = rule.get("FromPort")
+        to_port = rule.get("ToPort")
+        cidrs = [ip_range.get("CidrIp") for ip_range in rule.get("IpRanges", [])]
+        return f"{protocol} {from_port}-{to_port} from {', '.join(cidrs)}"
+
+    inbound_rules = [create_rule_text(rule) for rule in sg_config.get("IpPermissions", [])]
+    outbound_rules = [create_rule_text(rule) for rule in sg_config.get("IpPermissionsEgress", [])]
+
+    df = pd.DataFrame({
+        "Inbound Rules": inbound_rules + [""] * (len(outbound_rules) - len(inbound_rules)),
+        "Outbound Rules": outbound_rules + [""] * (len(inbound_rules) - len(outbound_rules))
+    })
+
+    fig = go.Figure(data=[go.Table(
+        header=dict(values=list(df.columns),
+                    fill_color='#0083B8',
+                    align='left',
+                    font=dict(color='white', size=12)),
+        cells=dict(values=[df["Inbound Rules"], df["Outbound Rules"]],
+                   fill_color='#F0F2F6',
+                   align='left'))
+    ])
+
+    fig.update_layout(
+        title="Security Group Rules",
+        font=dict(family="Arial", size=14),
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+
+    return fig
+
+def create_network_diagram(sg_config):
     G = nx.Graph()
     sg_name = sg_config.get('GroupName', 'Security Group')
     G.add_node(sg_name, node_type='security_group')
     
     for direction, rules in [('Inbound', sg_config.get('IpPermissions', [])),
                              ('Outbound', sg_config.get('IpPermissionsEgress', []))]:
-        G.add_node(direction, node_type='direction')
-        G.add_edge(sg_name, direction)
-        for i, rule in enumerate(rules):
-            rule_node = f"{direction}_rule_{i}"
-            G.add_node(rule_node, node_type='rule')
-            G.add_edge(direction, rule_node)
+        for rule in rules:
+            protocol = rule.get('IpProtocol', 'All')
+            from_port = rule.get('FromPort', 'Any')
+            to_port = rule.get('ToPort', 'Any')
+            
             for ip_range in rule.get('IpRanges', []):
                 cidr = ip_range.get('CidrIp', 'Unknown')
-                G.add_node(cidr, node_type='cidr')
-                G.add_edge(rule_node, cidr)
+                node_name = f"{direction}: {cidr}"
+                G.add_node(node_name, node_type='cidr')
+                G.add_edge(sg_name, node_name, 
+                           label=f"{protocol}: {from_port}-{to_port}",
+                           direction=direction.lower())
     
-    pos = nx.spring_layout(G, k=0.5, iterations=50)
+    pos = nx.spring_layout(G)
     edge_x, edge_y = [], []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
@@ -119,7 +147,11 @@ def create_hierarchical_layout(sg_config):
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
 
-    edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'), hoverinfo='none', mode='lines')
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=0.5, color='#888'),
+        hoverinfo='none',
+        mode='lines')
 
     node_x, node_y = [], []
     for node in G.nodes():
@@ -128,184 +160,62 @@ def create_hierarchical_layout(sg_config):
         node_y.append(y)
 
     node_trace = go.Scatter(
-        x=node_x, y=node_y, mode='markers', hoverinfo='text',
-        marker=dict(showscale=True, colorscale='YlGnBu', size=10, colorbar=dict(thickness=15, title='Node Type'))
-    )
+        x=node_x, y=node_y,
+        mode='markers',
+        hoverinfo='text',
+        marker=dict(
+            showscale=True,
+            colorscale='YlGnBu',
+            size=10,
+            color=[],
+            line_width=2))
 
-    node_types = [G.nodes[node]['node_type'] for node in G.nodes()]
-    node_colors = [['security_group', 'direction', 'rule', 'cidr'].index(node_type) for node_type in node_types]
+    color_map = {'security_group': 0, 'cidr': 1}
+    node_colors = [color_map[G.nodes[node]['node_type']] for node in G.nodes()]
     node_trace.marker.color = node_colors
     node_trace.text = list(G.nodes())
 
     fig = go.Figure(data=[edge_trace, node_trace],
              layout=go.Layout(
-                title='Security Group Hierarchical Layout',
+                title='Security Group Network Diagram',
                 titlefont_size=16,
                 showlegend=False,
                 hovermode='closest',
                 margin=dict(b=20,l=5,r=5,t=40),
-                annotations=[dict(text="", showarrow=False, xref="paper", yref="paper")],
+                annotations=[dict(
+                    text="",
+                    showarrow=False,
+                    xref="paper", yref="paper",
+                    x=0.005, y=-0.002)],
                 xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-             ))
+                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+                )
     
     return fig
-
-def create_sankey_diagram(sg_config):
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    source = []
-    target = []
-    value = []
-    label = ["Security Group"]
-    
-    for direction, rules in [("Inbound", inbound_rules), ("Outbound", outbound_rules)]:
-        label.append(direction)
-        source.append(0)
-        target.append(len(label) - 1)
-        value.append(len(rules))
-        
-        for rule in rules:
-            protocol = rule.get("IpProtocol", "All")
-            port_range = f"{rule.get('FromPort', 'Any')}-{rule.get('ToPort', 'Any')}"
-            for ip_range in rule.get("IpRanges", []):
-                cidr = ip_range.get("CidrIp", "Unknown")
-                label.append(f"{protocol} {port_range} {cidr}")
-                source.append(len(label) - 2)
-                target.append(len(label) - 1)
-                value.append(1)
-    
-    fig = go.Figure(data=[go.Sankey(
-        node = dict(
-          pad = 15,
-          thickness = 20,
-          line = dict(color = "black", width = 0.5),
-          label = label,
-          color = "blue"
-        ),
-        link = dict(
-          source = source,
-          target = target,
-          value = value
-      ))])
-
-    fig.update_layout(title_text="Security Group Traffic Flow", font_size=10)
-    return fig
-
-def create_heatmap(sg_config):
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    all_cidrs = set()
-    all_ports = set()
-    
-    for rule in inbound_rules + outbound_rules:
-        from_port = rule.get("FromPort", 0)
-        to_port = rule.get("ToPort", 65535)
-        all_ports.update(range(from_port, to_port + 1))
-        for ip_range in rule.get("IpRanges", []):
-            all_cidrs.add(ip_range.get("CidrIp", "Unknown"))
-    
-    all_cidrs = list(all_cidrs)
-    all_ports = sorted(list(all_ports))
-    
-    heatmap_data = [[0 for _ in range(len(all_ports))] for _ in range(len(all_cidrs))]
-    
-    for rule in inbound_rules + outbound_rules:
-        from_port = rule.get("FromPort", 0)
-        to_port = rule.get("ToPort", 65535)
-        for ip_range in rule.get("IpRanges", []):
-            cidr = ip_range.get("CidrIp", "Unknown")
-            cidr_index = all_cidrs.index(cidr)
-            for port in range(from_port, to_port + 1):
-                if port in all_ports:
-                    port_index = all_ports.index(port)
-                    heatmap_data[cidr_index][port_index] = 1
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=heatmap_data,
-        x=all_ports,
-        y=all_cidrs,
-        colorscale='Viridis'))
-
-    fig.update_layout(
-        title='Security Group Rules Heatmap',
-        xaxis_title='Ports',
-        yaxis_title='CIDR Blocks')
-    
-    return fig
-
-def create_chord_diagram(sg_config):
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    all_cidrs = set()
-    all_protocols = set()
-    
-    for rule in inbound_rules + outbound_rules:
-        protocol = rule.get("IpProtocol", "All")
-        all_protocols.add(protocol)
-        for ip_range in rule.get("IpRanges", []):
-            all_cidrs.add(ip_range.get("CidrIp", "Unknown"))
-    
-    all_cidrs = list(all_cidrs)
-    all_protocols = list(all_protocols)
-    
-    matrix = [[0 for _ in range(len(all_protocols))] for _ in range(len(all_cidrs))]
-    
-    for rule in inbound_rules + outbound_rules:
-        protocol = rule.get("IpProtocol", "All")
-        protocol_index = all_protocols.index(protocol)
-        for ip_range in rule.get("IpRanges", []):
-            cidr = ip_range.get("CidrIp", "Unknown")
-            cidr_index = all_cidrs.index(cidr)
-            matrix[cidr_index][protocol_index] = 1
-    
-    fig = go.Figure(data=[go.Chord(
-        matrix=matrix,
-        labels=all_cidrs + all_protocols,
-        colorscale='Viridis'
-    )])
-
-    fig.update_layout(title='Security Group Connections', font_size=10)
-    return fig
-
-def create_icon_based_visualization(sg_config):
-    inbound_rules = sg_config.get("IpPermissions", [])
-    outbound_rules = sg_config.get("IpPermissionsEgress", [])
-    
-    def create_rule_text(rule, direction):
-        protocol = rule.get("IpProtocol", "All")
-        from_port = rule.get("FromPort", "Any")
-        to_port = rule.get("ToPort", "Any")
-        cidrs = [ip_range.get("CidrIp", "Unknown") for ip_range in rule.get("IpRanges", [])]
-        icon = "🔒" if direction == "Inbound" else "🔓"
-        return f"{icon} {direction}: {protocol} {from_port}-{to_port} from {', '.join(cidrs)}"
-    
-    inbound_texts = [create_rule_text(rule, "Inbound") for rule in inbound_rules]
-    outbound_texts = [create_rule_text(rule, "Outbound") for rule in outbound_rules]
-    
-    all_rules = inbound_texts + outbound_texts
-    
-    html = """
-    <style>
-    .icon-rule {
-        padding: 5px;
-        margin: 5px 0;
-        border-radius: 5px;
-        background-color: #f0f0f0;
-    }
-    </style>
-    """
-    
-    for rule in all_rules:
-        html += f'<div class="icon-rule">{rule}</div>'
-    
-    return html
 
 def main():
     st.set_page_config(layout="wide", page_title="Security Group Analyzer")
+
+    st.markdown("""
+    <style>
+    .main {
+        background-color: #f0f2f6;
+    }
+    .stApp {
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+    .st-bx {
+        background-color: #ffffff;
+        border-radius: 5px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .st-emotion-cache-1wbqy5j {
+        max-width: 1200px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     st.title("🛡️ AWS Security Group Analyzer")
 
@@ -320,34 +230,21 @@ def main():
                 for i, sg_config in enumerate(sg_configs):
                     st.markdown(f"## Security Group: {sg_config.get('GroupName', 'Unnamed')}")
                     
-                    # Rules Visualization
-                    st.markdown("### Rules Visualization")
-                    rules_df = create_enhanced_dataframe(sg_config)
-                    rules_tabs = st.tabs(["Streamlit Table", "AgGrid Table", "Custom HTML Table"])
-                    with rules_tabs[0]:
-                        visualize_rules_streamlit(rules_df)
-                    with rules_tabs[1]:
-                        visualize_rules_aggrid(rules_df)
-                    with rules_tabs[2]:
-                        visualize_rules_custom_html(rules_df)
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("### 📊 Rules Visualization")
+                        fig = visualize_security_group(sg_config)
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    # Network Diagram Alternatives
-                    st.markdown("### Network Diagram Alternatives")
-                    diagram_tabs = st.tabs(["Hierarchical Layout", "Sankey Diagram", "Heatmap", "Chord Diagram", "Icon-based Visualization"])
-                    with diagram_tabs[0]:
-                        st.plotly_chart(create_hierarchical_layout(sg_config), use_container_width=True)
-                    with diagram_tabs[1]:
-                        st.plotly_chart(create_sankey_diagram(sg_config), use_container_width=True)
-                    with diagram_tabs[2]:
-                        st.plotly_chart(create_heatmap(sg_config), use_container_width=True)
-                    with diagram_tabs[3]:
-                        st.plotly_chart(create_chord_diagram(sg_config), use_container_width=True)
-                    with diagram_tabs[4]:
-                        st.markdown(create_icon_based_visualization(sg_config), unsafe_allow_html=True)
+                    with col2:
+                        st.markdown("### 🕸️ Network Diagram")
+                        net_fig = create_network_diagram(sg_config)
+                        st.plotly_chart(net_fig, use_container_width=True)
 
-                    # Analysis Results
-                    st.markdown("### 🔍 Analysis Results")
                     issues, suggestions = analyze_security_group(sg_config)
+                    
+                    st.markdown("### 🔍 Analysis Results")
                     
                     if not any(issues.values()):
                         st.success("✅ No issues found in this security group.")
