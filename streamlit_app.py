@@ -327,4 +327,53 @@ def main():
                     with rules_tabs[0]:
                         visualize_rules_streamlit(rules_df)
                     with rules_tabs[1]:
-                        visual
+                        visualize_rules_aggrid(rules_df)
+                    with rules_tabs[2]:
+                        visualize_rules_custom_html(rules_df)
+
+                    # Network Diagram Alternatives
+                    st.markdown("### Network Diagram Alternatives")
+                    diagram_tabs = st.tabs(["Hierarchical Layout", "Sankey Diagram", "Heatmap", "Chord Diagram", "Icon-based Visualization"])
+                    with diagram_tabs[0]:
+                        st.plotly_chart(create_hierarchical_layout(sg_config), use_container_width=True)
+                    with diagram_tabs[1]:
+                        st.plotly_chart(create_sankey_diagram(sg_config), use_container_width=True)
+                    with diagram_tabs[2]:
+                        st.plotly_chart(create_heatmap(sg_config), use_container_width=True)
+                    with diagram_tabs[3]:
+                        st.plotly_chart(create_chord_diagram(sg_config), use_container_width=True)
+                    with diagram_tabs[4]:
+                        st.markdown(create_icon_based_visualization(sg_config), unsafe_allow_html=True)
+
+                    # Analysis Results
+                    st.markdown("### 🔍 Analysis Results")
+                    issues, suggestions = analyze_security_group(sg_config)
+                    
+                    if not any(issues.values()):
+                        st.success("✅ No issues found in this security group.")
+                    else:
+                        for severity in ["High", "Medium", "Low"]:
+                            if issues.get(severity):
+                                with st.expander(f"{severity.upper()} Severity Issues", expanded=(severity == "High")):
+                                    for issue, suggestion in zip(issues[severity], suggestions[severity]):
+                                        st.markdown(f"""
+                                        <div style="background-color: {'#FFCCCB' if severity == 'High' else '#FFFFE0' if severity == 'Medium' else '#E0FFFF'}; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                                            <p style="font-weight: bold;">🚨 {issue}</p>
+                                            <p>💡 Suggestion: {suggestion}</p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+
+                    st.markdown("---")
+
+        except Exception as e:
+            st.error(f"An error occurred while processing the file: {str(e)}")
+
+    st.sidebar.title("About")
+    st.sidebar.info(
+        "This app analyzes AWS Security Group configurations for potential security issues. "
+        "It checks for overly permissive rules, large port ranges, rule duplication, "
+        "and use of the default security group."
+    )
+
+if __name__ == "__main__":
+    main()
